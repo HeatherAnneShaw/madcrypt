@@ -1,0 +1,84 @@
+
+        // add our new section to the section header and modify offsets to account for this
+        PIMAGE_SECTION_HEADER highest_section = return_section_w_highest_virtual_address(section_header, file_header->NumberOfSections);
+        section_header_size += IMAGE_SIZEOF_SECTION_HEADER;
+        PIMAGE_SECTION_HEADER new_section = section_header + file_header->NumberOfSections;
+        file_header->NumberOfSections++;
+        
+        memset(new_section, 0, IMAGE_SIZEOF_SECTION_HEADER);
+        sprintf(new_section->Name, ".edata");
+        new_section->Misc.VirtualSize = PE_ALIGN(pe_handler.image->size, optional_header->SectionAlignment, 0);
+        new_section->VirtualAddress = PE_ALIGN(highest_section->Misc.VirtualSize, optional_header->SectionAlignment, highest_section->VirtualAddress);
+        new_section->SizeOfRawData = PE_ALIGN(pe_handler.image->size, optional_header->FileAlignment, 0);
+        new_section->PointerToRawData = highest_section->PointerToRawData + highest_section->SizeOfRawData;//section_header->PointerToRawData;
+        new_section->Characteristics = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE;
+        
+        optional_header->SizeOfCode += new_section->SizeOfRawData;
+        optional_header->SizeOfImage = new_section->VirtualAddress + new_section->Misc.VirtualSize;
+        optional_header->AddressOfEntryPoint = new_section->VirtualAddress + offsetof(image_t, loader);
+        
+        // modify loader address so we know where everything is in the loader
+        pe_handler.image->loader_address = optional_header->ImageBase + new_section->VirtualAddress;
+        
+        // write out original section headers
+        crypt_sections = malloc(file_header->NumberOfSections * sizeof(crypt_data_t));
+        bzero(crypt_sections, file_header->NumberOfSections * sizeof(crypt_data_t));
+        for(int i = 0, s = 0;i < file_header->NumberOfSections - 1;i++)
+        {
+            data = malloc(section_header[i].SizeOfRawData);
+            if(section_header[i].SizeOfRawData > 0)
+            {
+                oread(frp, section_header[i].PointerToRawData, data, section_header[i].SizeOfRawData);
+                // encrypt executable sections
+                if(section_header[i].Characteristics & IMAGE_SCN_MEM_EXECUTE)
+                {
+                    // mark all code sections RW
+                    section_header[i].Characteristics |= IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_READ;
+                    #define ENTRYPOINT_DELTA ( (pe_handler.image->entry_point - optional_header->ImageBase) - section_header[i].VirtualAddress )
+                    #define ALIGNED_DELTA ( ENTRYPOINT_DELTA / sizeof(DWORD) + (ENTRYPOINT_DELTA % sizeof(DWORD)) )
+                    #define ALIGNED_FILE_OFFSET ( ALIGNED_DELTA + section_header[i].PointerToRawData )
+                    #define DIFFERENCE ( \
+                        (section_header[i].Misc.VirtualSize < section_header[i].SizeOfRawData) ? \
+                            section_header[i].Misc.VirtualSize - ALIGNED_DELTA \
+                            : section_header[i].SizeOfRawData - ALIGNED_DELTA \
+                    )
+                    #define CODE_SIZE ( DIFFERENCE - (DIFFERENCE % sizeof(DWORD)) )
+                    
+                    if(!arguments.silent)
+                        printf("Crypting %s section starting at section delta: %i file offset: %i size: %i.\nsection offset: %i\n", 
+                            section_header[i].Name,
+                            ALIGNED_DELTA,
+                            ALIGNED_FILE_OFFSET,
+                            CODE_SIZE,
+                            section_header[i].PointerToRawData);
+                    
+//                    for(int c = 0;c < CODE_SIZE / sizeof(DWORD);c++)
+//                        data[c + (ENTRYPOINT_DELTA / sizeof(DWORD))] ^= crypt_key;
+                    
+                    
+                    
+                    // store the section info for decrypter stub
+//                    crypt_sections[s].VirtualAddress = pe_handler.image->entry_point;
+//                    crypt_sections[s].Size = CODE_SIZE;
+                }
+                owrite(fwp, section_header[i].PointerToRawData, data, section_header[i].SizeOfRawData);
+                free(data);
+            }
+        }
+        // write out crypter stub section
+        if(!arguments.silent)
+            printf("Writting crypter stub.\n");
+        data = malloc(new_section->SizeOfRawData);
+        bzero(data, new_section->SizeOfRawData);
+        memcpy(data, pe_handler.image, pe_handler.image->size);
+        memcpy((char*) data + pe_handler.image->size, crypt_sections, (file_header->NumberOfSections - 1) * sizeof(crypt_data_t));
+        fseek(fwp, new_section->PointerToRawData, SEEK_SET);
+        owrite(fwp, new_section->PointerToRawData, data, new_section->SizeOfRawData);
+        free(data);
+        free(crypt_sections);
+//    }
+//    else
+//    {
+//        printf("This isnt implemented yet...\n");
+//        exit(0);
+//    }
